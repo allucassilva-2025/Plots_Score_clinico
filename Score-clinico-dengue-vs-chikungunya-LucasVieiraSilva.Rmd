@@ -1,0 +1,435 @@
+---
+title: "Score clínico para distinguir casos de dengue e chikungunya"
+author: "Lucas Vieira Silva"
+date: "`r Sys.Date()`"
+output: distill::distill_article
+---
+### Pré-requisitos
+```{r}
+library(tidyverse)
+library(patchwork)
+```
+
+## Resumo
+
+## 1. Base de Dados
+
+### 1.1. Origem
+As bases de dados deste trabalho pertencem ao SINAM e estão disponíveis em:
+https://dadosabertos.saude.gov.br/dataset/arboviroses-dengue
+https://dadosabertos.saude.gov.br/dataset/arboviroses-febre-de-chikungunya
+
+### 1.2. Limpeza
+Com objetivo de otimizar o manejo das bases de dados e refinar suas informações executamos a seguinte filtragem:
+
+- Se ```dt_sin_pri == NA``` ignoramos o dado do paciente, pois ele é inconsistente para os próximos passos da ánalise;
+
+- Regra ```dt_sin_pri <= dt_notific```, sendo que ```dt_sin_pri``` = data dos primeiros sintomas e ```dt_notific``` = data da notificação do caso;
+
+- Para remover duplicidades, excluímos todos os casos ```nduplic_n == "2"```;
+
+- Normalmente os sintomas são respondidos por ``` "1" = sim ``` ou  ``` "2" = não ```, portanto definiremos qualquer outra resposta diferente como ```NA```;
+
+- Descartamos casos com ```sg_uf_not == NA```, pois estes casos implicam que os pacientes residem fora do Brasil, quando a ánalise é referente à apenas casos nacionais;
+
+- Casos onde todos os sintomas são ```NA``` também serão desconsiderados;
+
+- Usaremos apenas casos com PCR positivo: ```resul_pcr == "1"``` (1 = reagente), o motivo dessa escolha será descorrido abaixo, vale ressaltar que eliminamos casos onde ```dt_pcr (quando o teste foi feito) < dt_sin_pri``` pois são considerados inconsistentes.
+
+### 1.3. Filtragem por casos PCR positivo
+Como citado, um dos fatores filtrados foi a presença do teste PCR+. Entendende-se este teste, com a sigla advinda de *Polymearise Chain Reaction* (Reação em cadeia de Polimearase), como o critério laboratorial mais confiável para confirmar casos de dengue e chikungunya.
+
+![](montagem-grafica.jpg)
+
+<div style="text-align: center;">
+**Fig. 1.1** A imagem demonstra a baixa parcela de contaminados que fazem o teste e testam positivo, com objetivo de ressaltar a filtragem desse grupo.
+Código do plot disponibilizado em: https://github.com/allucassilva-2025/Plots_Score_clinico/tree/main/plot_1
+</div>
+
+### 1.4. Semelhança entre os sintomas
+A ánalise feita neste texto surge da problemática causada pela semelhança entre os sintomas das duas arboviroses. Isto é, pela similaridade entre as duas doenças, casos de Dengue podem ser confundidos com casos de Chikungunya e vice-versa, provocando diagnósticos incorretos, que consequentemente, possibilitam outros riscos ao paciente.
+
+![](comparacao-sintomas-deng-chik.png)
+<div style="text-align: center;">
+**Fig. 1.2** Semelhança entre sintomas de Dengue e Chikungunya.
+Código do plot disponibilizado em: https://github.com/allucassilva-2025/Plots_Score_clinico/tree/main/plot_2
+</div>
+
+Este fato ressalta o cuidado que devemos ter ao fazer a leitura dos dados, já que diagnósticos podem ter sido confundidos, entretanto, é esperado que lidemos com o erro menor desde que filtremos para casos com PCR+.
+
+## 2. Score clínico
+### 2. 1. Objetivo
+O objetivo principal é estabelecer um sistema de pontuações que diferencie casos de dengue e chikungunya a partir de seus sintomas.
+
+### 2. 2. Método
+Para aplicação do score usaremos as seguintes variáveis:
+
+| $i$ | Variável      | Descrição clínica |
+|-----|--------------|----------------------------------|
+| $1$ | artralgia    | Dor nas articulações (sem sinais claros de inflamação articular). |
+| $2$ | artrite      | Inflamação nas articulações (ex.: inchaço, calor, vermelhidão e/ou limitação de movimento). |
+| $3$ | cefaleia     | Dor de cabeça. |
+| $4$ | dor_costas   | Dor nas costas (região dorsal/lombar). |
+| $5$ | dor_retro    | Dor retro-orbitária (dor “atrás dos olhos”). |
+| $6$ | exantema     | Exantema/erupção cutânea (manchas/lesões na pele). |
+| $7$ | febre        | Febre (temperatura elevada ou relato de febre). |
+| $8$ | mialgia      | Dor muscular. |
+| $9$ |nausea       | Náusea (sensação de enjoo). |
+| $10$ |vomito       | Vômito (episódios de vômito). |
+
+Este sintomas foram escolhidos, pois todos eles estão presentes em mais de 10% dos pacientes de alguma das arboviroses, sendo relevantes para a pesquisa. A construção do modelo para diferenciação entre os casos de dengue e chikungunya foi realizada através de um *score* clínico baseado em variáveis clínicas e epidemiológicas. A seguir, detalharemos as variáveis utilizadas, o processo de implementação e o cálculo do *score*, bem como os métodos estatísticos empregados.
+
+## 3. Aplicações e Comparações
+
+### 3.1. Diferença de probabilidades condicionais de um sintoma
+Primeiramente, faremos uma abordagem mais simples, tomando $p_{i \mid a} = \mathbb{P} \left( i \mid \text{arbovirose} \right)$, sendo que as arboviroses presentes no nosso estudo são $D = \text{Dengue}$ e $C = \text{Chinkugunya}$. Assim, com objetivo de diferenciar os casos,  tomaremos $S_i=p_{i \mid D} - p_{i \mid C}$, denotando assim, o *score* total $S_{\text{total}}=\sum_{i=1}^{10} x_i\,S_i$, onde $x_i$ é um termo binário, onde $1 \Rightarrow \text{Tem o sintoma}$ e  $0 \Rightarrow \text{Não tem o sintoma}$.
+
+No código abaixo, vamos associar os valores de $S_i$ para $i=7$ (dengue):
+
+```{r}
+# S_febre = P(febre=1 | dengue, PCR+) - P(febre=1 | chik, PCR+)
+deng_pcr <- read.csv("deng_pcr_pos.csv")
+chik_pcr <- read.csv("chik_pcr_pos.csv")
+pD <- mean(deng_pcr$FEBRE == 1, na.rm = TRUE)
+pC <- mean(chik_pcr$FEBRE == 1, na.rm = TRUE)
+S_7 <- pD - pC
+S_7
+```
+
+Este valor pode ser verificado na figura 1.2. Replicando o mesmo processo nas demais variáveis, chegamos ao resultado abaixo: 
+
+| $i$ | Variável      |$p_{i, D}\ (\%)$ | $p_{i, C}\ (\%)$ | $\ S_i$ |
+|-----|--------------|------------|------------|-------|
+| $1$ | artralgia    | $21.7$ | $51.3$ | $-0.296$ |
+| $2$ | artrite      | $11.8$ | $23.3$ | $-0.115$ |
+| $3$ | cefaleia     | $82.6$ | $68.7$ | $+0.139$ |
+| $4$ | dor_costas   | $36.7$ | $35.9$ | $+0.008$ |
+| $5$ | dor_retro    | $38.7$ | $24.1$ | $+0.146$ |
+| $6$ | exantema     | $11.5$ | $13.9$ | $-0.023$ |
+| $7$ | febre        | $88.8$ | $79.0$ | $+0.099$ |
+| $8$ | mialgia      | $83.1$ | $77.1$ | $+0.060$ |
+| $9$ | nausea       | $49.6$ | $31.8$ | $+0.178$ |
+| $10$ |vomito       | $31.4$ | $17.7$ | $+0.137$ |
+
+Agora, usaremos a base de dados ```deng_chik``` que contém o $S_{\text{total}}$ e a doença contraída por cada caso para visualizar o rendimento do método proposto:
+
+```{r}
+plot_half_violin_score <- function(df, score_col = "score", doenca_col = "doencas", adj = 2.0, cores = c(chik = "#F4A3A3", deng = "#52D1D2"),xlab = "Score (← mais Chikungunya | mais Dengue →)", title = NULL){
+
+  # pega vetores
+  s_deng <- df[[score_col]][df[[doenca_col]] == "deng"]
+  s_chik <- df[[score_col]][df[[doenca_col]] == "chik"]
+
+  # densidades
+  d_deng <- density(s_deng, na.rm = TRUE, adjust = adj)
+  d_chik <- density(s_chik, na.rm = TRUE, adjust = adj)
+
+  dens <- dplyr::bind_rows(
+    data.frame(x = d_deng$x, y =  d_deng$y, doencas = "deng"),
+    data.frame(x = d_chik$x, y = -d_chik$y, doencas = "chik")
+  ) |>
+    dplyr::mutate(ymin = pmin(0, y), ymax = pmax(0, y))
+
+  # plot
+  ggplot(dens, aes(x = x, fill = doencas)) +
+    geom_ribbon(aes(ymin = ymin, ymax = ymax), alpha = 0.75, colour = NA) +
+    geom_hline(yintercept = 0) +
+    scale_fill_manual(values = cores, name = "Doença") +
+    labs(x = xlab, y = NULL, title = title) +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+}
+```
+
+```{r}
+deng_chik_m1 <- read.csv("C:/Users/lucas/Documents/deng-chik-m1.csv")
+Plot_1 <- plot_half_violin_score(deng_chik_m1, score_col = "score", adj = 2.0)
+Plot_1
+```
+
+Observando a visualização, nota-se grande parcela de sobreposição entre as duas arboviroses (presença de densidades de tamanho semelhante no mesmo intervalo), com objetivo de resolver este problema, vamos adicionar um intervalo referente à casos inconclusivos, isto é, *scores* que se sobrepoem. Acompanhe o plot abaixo:
+
+
+```{r}
+delta <- 0.1
+c <- 0.15
+a <- c - delta
+b <- c + delta
+
+Plot_1 <- Plot_1 +
+  annotate("rect",
+           xmin = a, xmax = b,
+           ymin = -Inf, ymax = Inf,
+           fill = "grey50", alpha = 0.25) +
+  labs(
+    title = "(i) Diferença de proporções",
+  )
+
+Plot_1
+
+```
+Antes de prosseguir com o assunto, vale ressaltar que a área de imprecisão é decidida através da visualização do autor, então não deve ser considerada como fator preciso. \
+Nota-se que mesmo com o intervalo adicionado é notável a irregularidade em relação à sobreposições. Com intuito de solucionar esta problemática, seguimos com outro modelo para a parte seguinte.
+
+### 3.2. Logaritmo da razão de probabilidades condicionais de um sintoma
+Na Seção 3.1 utilizamos o score baseado na diferença $S_i=P_{i,D}-P_{i,C}$ somando $S_i$ apenas para os sintomas presentes no paciente. Embora simples e interpretável, essa escolha mede “diferença absoluta” e não necessariamente captura bem o quanto um sintoma favorece dengue em relação a chikungunya (ou vice-versa), principalmente quando as probabilidades condicionais são muito pequenas ou muito grandes. Além disso, como nosso objetivo é acumular evidências ao longo de vários sintomas, é interessante usar uma transformação que produza um score naturalmente aditivo e com interpretação probabilística mais direta.
+Por isso, passamos a definir o peso de cada sintoma $i$ como o logaritmo da razão entre as probabilidades condicionais nas duas doenças:
+
+<div style="text-align: center;">
+$S_i=\log\!\left(\frac{p_D}{p_C}\right)$ \
+considerando a nova definição de $S_i$ e as definições anteriores das demais variáveis.
+</div>
+
+Como exemplo, calcularemos o $S_7$:
+
+```{r}
+S_7 <- log(pD / pC)
+S_7
+```
+
+Seguindo esse padrão, faremos $S_i \ \forall \ i \in \{ 1, 2, ..., 10 \}$: \
+
+| $i$ | Variável      |$S_i=\log\!\left(\frac{p_D}{p_C}\right)$|
+|-----|--------------|------------|
+| 1  | artralgia  | -0.86103350 |
+| 2  | artrite    | -0.68404737 |
+| 3  | cefaleia   |  0.18422117 |
+| 4  | dor_costas |  0.02241604 |
+| 5  | dor_retro  |  0.47270708 |
+| 6  | exantema   | -0.18943750 |
+| 7  | febre      |  0.11767599 |
+| 8  | mialgia    |  0.07565886 |
+| 9  | nausea     |  0.44358316 |
+| 10 | vomito     |  0.57164042 |
+
+Agora, usando outra base, chamada ```deng-prc-m2``` com os parâmetros estabelecidos nesta seção, seguiremos para a visualização:
+
+```{r}
+deng_chik_m2 <- read.csv("C:/Users/lucas/Documents/deng-chik-m2.csv")
+Plot_2 <- plot_half_violin_score(deng_chik_m2, score_col = "score", adj = 2.0)
+
+delta <- 0.25
+c <- 0
+a <- c - delta
+b <- c + delta
+
+Plot_2 <- Plot_2 +
+  annotate("rect",
+           xmin = a, xmax = b,
+           ymin = -Inf, ymax = Inf,
+           fill = "grey50", alpha = 0.25) +
+  labs(
+    title = "(ii) LLR simples",
+  )
+
+Plot_2
+```
+Ainda existe uma grande parte se sobrepondo. Buscaremos solucionar na próxima seção:
+
+### 3.3. Dependência temporal: $S_{total}$ por faixa de dias
+
+Agora, além de estimar a probabilidade condicional $\mathbb{P}(i|a)$, tomaremos $p_{i, a, t} = \mathbb{P}(i|a, t)$, onde $t =$ ```DT_NOTIFIC``` $-$ ```DT_SIN_PRI``` indica o atraso entre o início dos sintomas e a notificação. Também seguiremos a nova definição: $S_{i, t}=\log\!\left(\frac{p_{i,D,t}}{p_{i,C,t}}\right)$, assim, teremos $S_{total} = \sum_{i=1}^{10} x_i \ S_{i, t}$.
+
+Abaixo, exibimos um exemplo do cálculo $p_{i, a, t}$ para $i=7$ em R:
+
+```{r}
+# filtra pelo intervalo entre 0 e 3 dias
+t0 <- 0
+t1 <- 3
+
+deng_t <- deng_pcr %>%
+  mutate(t = as.numeric(as.Date(DT_NOTIFIC) - as.Date(DT_SIN_PRI))) %>%
+  filter(t >= t0, t <= t1)
+
+chik_t <- chik_pcr %>%
+  mutate(t = as.numeric(as.Date(DT_NOTIFIC) - as.Date(DT_SIN_PRI))) %>%
+  filter(t >= t0, t <= t1)
+
+# p_{7,D,t} = P(FEBRE=1 | dengue, t)
+pD_t <- mean(deng_t$FEBRE == 1, na.rm = TRUE)
+
+# p_{7,C,t} = P(FEBRE=1 | chik, t)
+pC_t <- mean(chik_t$FEBRE == 1, na.rm = TRUE)
+
+# S_{7,t} = log(pD_t / pC_t)
+S_7_t <- log(pD_t / pC_t)
+
+S_7_t
+```
+
+Aplicando para os outros sintomas e outros intervalos, temos:
+
+| $i$ | Variável      | $S_{i,0\text{-}3}$ | $S_{i,4\text{-}7}$ | $S_{i,8\text{-}14}$ | $S_{i,15+}$ |
+|-----|--------------|-------------------:|-------------------:|---------------------:|------------:|
+| $1$ | artralgia    | $-0.822$ | $-0.939$ | $-1.070$ | $-1.090$ |
+| $2$ | artrite      | $-0.633$ | $-0.785$ | $-0.904$ | $-0.909$ |
+| $3$ | cefaleia     | $+0.207$ | $+0.112$ | $+0.159$ | $+0.195$ |
+| $4$ | dor_costas   | $+0.0533$ | $-0.0537$ | $-0.0372$ | $-0.184$ |
+| $5$ | dor_retro   | $+0.502$ | $+0.398$ | $+0.336$ | $+0.364$ |
+| $6$ | exantema     | $-0.187$ | $-0.211$ | $-0.213$ | $-0.403$ |
+| $7$ | febre        | $+0.134$ | $+0.0760$ | $+0.0497$ | $+0.0889$ |
+| $8$ | mialgia      | $+0.103$ | $-0.00552$ | $+0.0410$ | $+0.0843$ |
+| $9$ | nausea       | $+0.468$ | $+0.365$ | $+0.423$ | $+0.400$ |
+| $10$ | vomito      | $+0.583$ | $+0.531$ | $+0.542$ | $+0.476$ |
+
+Faremos um processo semelhante às sessões anteriores para criarmos a base ```deng-chik-m3``` com a pontuação de cada caso:
+
+```{r}
+deng_chik_m3 <- read.csv("C:/Users/lucas/Documents/deng-chik-m3.csv")
+
+Plot_3 <- plot_half_violin_score(deng_chik_m3, score_col = "score", adj = 2.0)
+
+delta <- 0.15
+c <- 0.1
+a <- c - delta
+b <- c + delta
+
+Plot_3 <- Plot_3 +
+  annotate("rect",
+           xmin = a, xmax = b,
+           ymin = -Inf, ymax = Inf,
+           fill = "grey50", alpha = 0.25) +
+  labs(
+    title = "(iii) LLR com tempo",
+  )
+
+Plot_3
+```
+
+Na próxima seção, damos um passo adicional na direção de uma classificação mais realista: além da evidência fornecida pelos sintomas, incorporamos informação contextual da base — em especial a distribuição relativa de dengue e chikungunya em cada estado e período de notificação. A ideia é combinar o score sintomático (evidência individual) com um termo que represente a “chance a priori” de cada doença em um dado cenário epidemiológico, produzindo um *score* final que tende a reduzir ambiguidades quando o perfil de sintomas, isoladamente, não é suficientemente discriminativo.
+
+### 3.4. Prior epidemiológico ($\text{UF}×\text{mês}$) e logi
+
+Como o nosso objetivo é discriminar dengue de chikungunya, o termo de prior deve entrar na forma de uma razão entre as duas doenças. Assim, o prior contextual é definido por
+
+$$
+\text{prior}_{\text{UF},m}
+=
+\log\frac{\mathbb{P}(D\mid \text{UF},m)}{\mathbb{P}(C\mid \text{UF},m)}
+-
+\log\frac{\mathbb{P}(D)}{\mathbb{P}(C)}.
+$$
+
+Como estamos em um problema binário (apenas D ou C), vale $\mathbb{P}(C\mid \text{UF},m)=1-\mathbb{P}(D\mid \text{UF},m)$, e portanto o prior pode ser escrito via a função *logit*:
+
+$$
+\operatorname{logit}(p)=\log\!\left(\frac{p}{1-p}\right),
+\qquad
+\text{prior}_{\text{UF},m}
+=
+\operatorname{logit}(p_{D\mid \text{UF},m})-\operatorname{logit}(p_D),
+$$
+
+onde $p_{D\mid \text{UF},m}=\mathbb{P}(D\mid \text{UF},m)$ e $p_D=\mathbb{P}(D)$.
+
+Abaixo temos um exemplo como nas seções anteriores:
+
+```{r}
+S_clinico <- 0.08102618
+lambda <- 1
+alpha_prior <- 3
+
+logit <- function(p) log(p/(1-p))
+
+uf0  <- "MG"
+mes0 <- "2024-05"
+
+# cria coluna mes nas duas bases
+dD <- deng_pcr %>%
+  mutate(uf = SG_UF_NOT, mes = format(as.Date(DT_NOTIFIC), "%Y-%m"))
+
+dC <- chik_pcr %>%
+  mutate(uf = SG_UF_NOT, mes = format(as.Date(DT_NOTIFIC), "%Y-%m"))
+
+# contagens no contexto (UF, mês)
+nD <- dD %>% filter(uf == uf0, mes == mes0) %>% nrow()
+nC <- dC %>% filter(uf == uf0, mes == mes0) %>% nrow()
+
+# P(D | UF, mês) com suavização (para não dar 0/1)
+p_ctx <- (nD + alpha_prior) / (nD + nC + 2*alpha_prior)
+
+# prior global P(D)
+ND <- nrow(dD)
+NC <- nrow(dC)
+p_g <- ND / (ND + NC)
+
+# prior centrado e score final
+prior <- logit(p_ctx) - logit(p_g)
+S_total <- S_clinico + lambda * prior
+
+nD; nC
+p_ctx; p_g
+prior
+S_total
+```
+
+```{r}
+deng_chik_m4 <- read.csv("C:/Users/lucas/Documents/deng-chik-m4.csv")
+
+Plot_4 <- plot_half_violin_score(deng_chik_m4, score_col = "score", adj = 2.0)
+
+delta <- 0.64
+c <- -0.125
+a <- c - delta
+b <- c + delta
+
+Plot_4 <- Plot_4 +
+  annotate("rect",
+           xmin = a, xmax = b,
+           ymin = -Inf, ymax = Inf,
+           fill = "grey50", alpha = 0.25) +
+  labs(
+    title = "(iv) LLR + prior UF×mês",
+  )
+Plot_4
+```
+
+
+## 4. Comparação entre os métodos
+
+```{r}
+Plot_1 <- Plot_1 + guides(fill = "none") + labs(x = NULL)
+Plot_2 <- Plot_2 + labs(x = NULL)
+Plot_3 <- Plot_3 + guides(fill = "none") + labs(x = NULL)
+Plot_4 <- Plot_4 + guides(fill = "none") + labs(x = NULL)
+
+
+(Plot_1 | Plot_2) / (Plot_3 | Plot_4)
+```
+
+A Figura compara quatro abordagens para pontuar casos entre Dengue e Chikungunya: (i) diferença de proporções, (ii) razão logarítmica simples (LLR), (iii) LLR condicionada por faixa de dias desde o início dos sintomas e (iv) *score* final com *prior* espaço-temporal (UF×mês).
+
+No método de **diferença de proporções**, define-se $S_i = p_{i,D} - p_{i,C}$. As distribuições das duas doenças ainda apresentam sobreposição relevante, pois esse critério captura apenas diferenças absolutas de frequência, sem incorporar a natureza multiplicativa das probabilidades nem combinar sintomas de forma probabilisticamente consistente.
+
+Ao passar para a **razão logarítmica**, 
+$$
+S_i=\log\!\left(\frac{p_{i,D}}{p_{i,C}}\right),
+$$
+observa-se melhor separação, pois o logaritmo transforma razões em termos aditivos, permitindo construir um escore total como soma ponderada dos sintomas, alinhado à lógica do classificador bayesiano ingênuo.
+
+Na versão com **dependência temporal**, estima-se
+$$
+S_{i,t}=\log\!\left(\frac{p_{i,D,t}}{p_{i,C,t}}\right),
+$$
+onde as probabilidades são condicionadas à faixa de dias desde o início dos sintomas. Isso reflete que o perfil clínico muda com o tempo, e a pontuação passa a capturar melhor essas variações entre fases.
+
+Por fim, o ***score* final** acrescenta um termo epidemiológico de *prior* por UF×mês:
+$$
+S_{\text{total}}=\sum_{i=1}^{10}x_iS_{i,t}+\lambda\cdot \log\!\left(\frac{\mathbb{P}(D\mid \text{UF},\text{mês})}{\mathbb{P}(C\mid \text{UF},\text{mês})}\right),
+\qquad \lambda=1.
+$$
+Esse termo desloca o *score* conforme o contexto espaço-temporal, incorporando variações regionais e sazonais observadas na distribuição das arboviroses.
+
+## 5. Conclusão
+
+![](resultado-final.jpg)
+
+Este plot sintetiza o desempenho do *score* clínico proposto na distinção entre Dengue e Chikungunya. Observa-se uma separação clara entre as distribuições, com predominância de *scores* positivos para Dengue e negativos para Chikungunya, conforme esperado pela construção do modelo. A incorporação da razão logarítmica das probabilidades condicionais dos sintomas, ajustada pela dependência temporal e pelo termo de prior espaço-temporal (UF×mês), resulta em um classificador coerente com a dinâmica clínica e epidemiológica das arboviroses.
+
+Os resultados indicam que $64,4\%$ dos casos são corretamente classificados como Dengue e $62,6\%$ como Chikungunya, enquanto aproximadamente $27,8\%$ e $30,4\%$ dos contaminados com Dengue e Chikungunya, respectivamente, situam-se no intervalo inconclusivo previamente definido. Esse intervalo central reflete, de forma metodologicamente consistente, os casos em que o perfil sintomático e o contexto epidemiológico não fornecem evidência suficiente para uma decisão robusta.
+
+Assim, o modelo apresenta capacidade discriminatória relevante, mantendo transparência interpretativa — cada componente do score possui significado clínico ou epidemiológico claro. A abordagem demonstra que a combinação estruturada de informações sintomáticas, temporais e contextuais constitui uma estratégia sólida para apoio à diferenciação entre as arboviroses em cenários de vigilância epidemiológica.
